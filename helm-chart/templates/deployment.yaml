@@ -1,0 +1,66 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ .Values.release }}
+  labels:
+    app: {{ .Values.release }}
+spec:
+  {{- if not .Values.hpa.enabled }}
+  replicas: {{ .Values.replicas }}
+  {{- end }}
+  selector:
+    matchLabels:
+      app: {{ .Values.release }}
+  template:
+    metadata:
+      labels:
+        app: {{ .Values.release }}
+      annotations:
+        checksum/config: {{ include (print $.Template.BasePath "/configmap.yaml") . | sha256sum }}        
+    spec:
+      {{- if .Values.image.imagePullSecret }}
+      imagePullSecrets:
+        - name: {{ .Values.image.imagePullSecret }}
+      {{- end }}
+      containers:
+      - name: {{ .Values.release }}
+        image: {{ .Values.image.repository }}/{{ .Values.image.name }}:{{ .Values.image.tag }}
+        imagePullPolicy: {{ .Values.image.pullPolicy }}
+        resources:
+{{ toYaml .Values.resources | indent 10 }}
+        ports:
+        - containerPort: {{ .Values.container.port }}
+        {{- if .Values.livenessProbe.enabled }}
+        livenessProbe:
+          httpGet:
+            path: {{ .Values.livenessProbe.path }}
+            port: {{ .Values.container.port }}
+          initialDelaySeconds: {{ .Values.livenessProbe.initialDelaySeconds }}
+        {{- end }}
+        {{- if .Values.readinessProbe.enabled }}
+        readinessProbe:
+          httpGet:
+            path: {{ .Values.readinessProbe.path  }}
+            port: {{ .Values.container.port }} # Port on which container application is running
+          initialDelaySeconds: {{ .Values.readinessProbe.initialDelaySeconds }}
+        {{- end }}
+        {{- if .Values.volumes.enabled }}
+        volumeMounts:
+        - name: azurestorage
+          mountPath: /public/uploads
+        {{- end }}                                  
+        envFrom:
+        {{- if .Values.envVar }}
+          - configMapRef:
+              name: {{ .Values.release }}-config
+        {{ end }}
+        {{- if .Values.secretEnvVar }}
+          - secretRef:
+              name: {{ .Values.release }}-secret
+        {{ end }}
+      {{- if .Values.volumes.enabled }}        
+      volumes:
+        - name: azurestorage
+          persistentVolumeClaim:
+            claimName: {{ .Values.release }}-pvc
+      {{- end }}

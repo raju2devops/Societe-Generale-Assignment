@@ -1,0 +1,57 @@
+{{- if .Values.seed.enabled }}
+# =============================================================================
+# One-time bootstrap of the first administrator.
+#
+# The Secret this Job reads is declared in templates/secrets.yaml alongside the
+# application's own, and is deliberately a different Secret: only this Job
+# mounts it, so the long-running API never carries the bootstrap password in
+# its environment.
+# =============================================================================
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ .Values.release }}-seed
+  annotations:
+    # post-upgrade as well as post-install: the script is idempotent - it looks
+    # the operator up by blind index and reports "nothing to do" - so a rebuilt
+    # database re-seeds itself on the next release instead of needing a human.
+    "helm.sh/hook": post-install,post-upgrade
+    "helm.sh/hook-weight": "5"
+    # A failed run is left behind so its logs can be read; a successful one is
+    # cleaned up, and any previous attempt is removed before a new one starts.
+    "helm.sh/hook-delete-policy": before-hook-creation,hook-succeeded
+spec:
+  backoffLimit: 3
+  template:
+    metadata:
+      labels:
+        app: {{ .Values.release }}-seed
+    spec:
+      restartPolicy: Never
+      {{- if .Values.image.imagePullSecret }}
+      imagePullSecrets:
+        - name: {{ .Values.image.imagePullSecret }}
+      {{- end }}
+      containers:
+      - name: seed
+        image: {{ .Values.image.repository }}/{{ .Values.image.name }}:{{ .Values.image.tag }}
+        imagePullPolicy: {{ .Values.image.pullPolicy }}
+        command: ["node", "scripts/seed-admin.js"]
+        # The first two are the same config the API runs with, so the script
+        # reaches the same database with the same key material. The third is
+        # this Job's alone.
+        envFrom:
+          - configMapRef:
+              name: {{ .Values.release }}-config
+          - secretRef:
+              name: {{ .Values.release }}-secret
+          - secretRef:
+              name: {{ .Values.release }}-seed-secret
+        resources:
+          limits:
+            cpu: "250m"
+            memory: "256Mi"
+          requests:
+            cpu: "50m"
+            memory: "128Mi"
+{{- end }}

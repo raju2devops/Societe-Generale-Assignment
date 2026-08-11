@@ -1,0 +1,50 @@
+{{- if .Values.volumes.enabled }} 
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: {{ .Values.release }}-pv
+spec:
+  capacity:
+    storage: {{ .Values.volumes.size }}
+  accessModes:
+    - ReadWriteMany
+  claimRef:
+    name: {{ .Values.release }}-pvc
+    namespace: {{ .Values.volumes.ns }}
+  persistentVolumeReclaimPolicy: Retain
+  storageClassName: azurefile-csi
+  csi:
+    driver: file.csi.azure.com
+    readOnly: false
+    volumeHandle: {{ .Values.volumes.volumeHandel }} #Volume Handle should be Unique for for Every PV.
+    volumeAttributes:
+      resourceGroup: {{ .Values.volumes.azureRG }}
+      shareName: {{ .Values.volumes.shareName }}
+    nodeStageSecretRef:
+      name: {{ .Values.release }}-secret
+      namespace: {{ .Values.volumes.ns }}
+  mountOptions:
+    - dir_mode=0777
+    - file_mode=0777
+    - uid=0
+    - gid=0
+    - mfsymlinks
+    - cache=strict
+    - nosharesock
+    - nobrl
+{{- end }}    
+---
+{{- if .Values.volumes.enabled }} 
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ .Values.release }}-pvc
+spec:
+  accessModes:
+    - ReadWriteMany
+  storageClassName: azurefile-csi
+  resources:
+    requests:
+      storage: {{ .Values.volumes.size }}
+  volumeName: {{ .Values.release }}-pv
+{{- end }}  

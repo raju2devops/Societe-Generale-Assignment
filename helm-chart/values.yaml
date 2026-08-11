@@ -1,0 +1,80 @@
+release:
+
+replicas: 1
+
+tlsSecret: 
+  enabled: false
+
+image:
+  repository: ghacr.io
+  name:
+  tag:
+  pullPolicy: IfNotPresent
+  imagePullSecret: acrkey
+
+container:
+  port: 3000
+  restartPolicy: Always
+
+envVar: {}
+
+secretEnvVar: {}
+
+# One-time bootstrap of the first administrator, as a post-install hook.
+# Only the tier that owns the database should enable this.
+seed:
+  enabled: false
+  # Environment variable -> name of the entry in the ClusterSecretStore.
+  # Kept separate from secretEnvVar so the bootstrap password is mounted into
+  # the Job only, never into the long-running application.
+  secretEnvVar: {}
+
+hpa:
+  enabled: false
+  replicas: 
+    min: 1                                        # while scale down the minimum num pods for a service
+    max: 2                                        # while autoscale the maximum num pods for a service
+  cpupercentage: 50                               # Load for the respective pod which depends on cpu percentage  
+  memorypercentage: 50                            # Load for the respective pod which depends on memory percentage
+
+livenessProbe:
+  enabled: true
+  path: /
+  port: 3000
+  initialDelaySeconds: 15
+
+readinessProbe:
+  enabled: true
+  path: /
+  port: 3000
+  initialDelaySeconds: 15
+
+resources:
+  limits:
+    cpu: "250m"
+    memory: "512Mi"
+  requests:
+    cpu: "125m"
+    memory: "256Mi"
+
+service:
+  port: 80
+
+volumes: 
+  enabled: false
+  ns:
+  size: 
+  claimname:
+  volumeHandel:
+  azureRG:
+#  azureStgKey: 
+#  azureStgName:
+  shareName: 
+  
+ingress:
+  enabled: true
+  ingressClassName: ""
+  host: subdomain.example.com
+  tls:
+    secret: ""
+  annotations: {}

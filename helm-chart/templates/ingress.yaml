@@ -1,0 +1,34 @@
+{{- if .Values.ingress.enabled -}}
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: {{ .Values.release }}-ingress
+  annotations:
+{{ toYaml .Values.ingress.annotations | indent 4 }}
+    {{ if .Values.tlsSecret.enabled }}
+    nginx.ingress.kubernetes.io/cors-allow-origin: "*"
+    {{ else }}
+    cert-manager.io/cluster-issuer: clusterissuer-letsencrypt-production
+    {{ end }}
+spec:
+  ingressClassName: {{ .Values.ingress.ingressClassName }}
+  tls:
+    - hosts:
+      - {{ .Values.ingress.host }}
+      {{ if .Values.tlsSecret.enabled }}
+      secretName: secret-tls
+      {{ else }}
+      secretName: {{ .Values.release }}-certificate-secret
+      {{ end }} 
+  rules:
+  - host: {{ .Values.ingress.host }}
+    http:
+      paths:
+      - path: /
+        pathType: Prefix
+        backend:
+          service:
+            name: {{ .Values.release }}
+            port:
+              number: {{ .Values.service.port }}
+{{ end }}
