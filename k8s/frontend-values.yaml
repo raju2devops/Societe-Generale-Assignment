@@ -1,0 +1,98 @@
+# =============================================================================
+# SPA tier - values for ../helm-chart
+#
+#   helm upgrade --install sg-bank-web ../helm-chart -f frontend-values.yaml \
+#     --create-namespace -n sg-bank
+#
+# Mirrors the `web` service in ../docker-compose.yml: the only tier with a
+# route in from outside, serving the built SPA and reverse-proxying /api/ to
+# the API Service. Deploy the API first - nginx resolves sg-bank-api at
+# startup and the pod will not come up until that Service exists.
+# =============================================================================
+
+release: sg-bank-web
+
+replicas: 1
+
+tlsSecret:
+  enabled: false
+
+image:
+  repository: ghcr.io
+  name: raju2devops/sc-assignment-web
+  tag: "1.0.1"
+  pullPolicy: IfNotPresent
+  # See backend-values.yaml - empty because the packages are public.
+  imagePullSecret: ""
+
+# nginx-unprivileged listens on 8080; it cannot bind a privileged port, which
+# is the whole point of that base image.
+container:
+  port: 8080
+  restartPolicy: Always
+
+# Empty on purpose. This is a static bundle - Vite inlines its configuration at
+# BUILD time, so VITE_BRAND_LOGO_URL is a build-arg in the workflow, not a
+# runtime variable. The API base URL is the relative "/api/v1", so there is
+# nothing origin-specific to inject here either.
+envVar: {}
+
+secretEnvVar: {}
+
+hpa:
+  enabled: false
+  replicas:
+    min: 2
+    max: 4
+  cpupercentage: 70
+  memorypercentage: 70
+
+# The SPA has no health endpoint of its own; "/" returns the index shell, which
+# is the same check compose uses for this container.
+livenessProbe:
+  enabled: true
+  path: /
+  port: 8080
+  initialDelaySeconds: 10
+
+readinessProbe:
+  enabled: true
+  path: /
+  port: 8080
+  initialDelaySeconds: 5
+
+# Serving static files and proxying - far lighter than the API tier.
+resources:
+  limits:
+    cpu: "250m"
+    memory: "128Mi"
+  requests:
+    cpu: "50m"
+    memory: "64Mi"
+
+# Ingress talks to :80, the chart maps it to containerPort 8080.
+service:
+  port: 80
+
+volumes:
+  enabled: false
+
+# The public entry point - compose publishes 8080:8080 on this tier only.
+#
+# The chart's ingress template always emits a `tls:` block, and with
+# tlsSecret.enabled=false it adds the cert-manager cluster-issuer annotation
+# and expects a certificate at <release>-certificate-secret. Set the host to a
+# name that actually resolves to your ingress controller or cert issuance will
+# spin.
+ingress:
+  enabled: true
+  host: sc-assignment-172.199.85.126.nip.io
+  ingressClassName: nginx
+  tls:
+    secret: ""
+  annotations:
+    nginx.ingress.kubernetes.io/ssl-redirect: "true"
+    # No rewrite-target here. The SPA calls /api/v1/... and nginx inside the
+    # pod proxies on the full path; stripping the prefix at the ingress would
+    # break every API call.
+    nginx.ingress.kubernetes.io/proxy-body-size: "64k"

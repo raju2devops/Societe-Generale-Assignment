@@ -1,0 +1,150 @@
+# =============================================================================
+# API tier - values for ../helm-chart
+#
+#   helm upgrade --install sg-bank-api ../helm-chart -f backend-values.yaml \
+#     --create-namespace -n sg-bank
+#
+# Mirrors the `api` service in ../docker-compose.yml. Two differences are
+# deliberate and called out inline: MongoDB is external (the chart has no
+# database template), and the API is not exposed through an Ingress - exactly
+# as compose keeps it off the published-ports list.
+# =============================================================================
+
+# The Service, Deployment and selector all take this name. nginx in the web
+# image proxies to `http://sg-bank-api:4000` (apps/frontend/nginx.conf), which is
+# cluster DNS for a Service called sg-bank-api in this namespace - so this
+# value is load-bearing. Renaming it silently breaks the SPA's /api calls.
+release: sg-bank-api
+
+replicas: 1
+
+tlsSecret:
+  enabled: false
+
+image:
+  repository: ghcr.io
+  name: raju2devops/sc-assignment-api
+  tag: "1.0.1"
+  pullPolicy: IfNotPresent
+  # Empty because the GHCR packages are public. The chart only renders
+  # imagePullSecrets when this is set, so no registry credential has to exist
+  # in the cluster - which is what lets the deploy job run without a PAT.
+  # Set it to a secret name if the packages are ever made private.
+  imagePullSecret: ""
+
+container:
+  port: 4000
+  restartPolicy: Always
+
+# Non-secret configuration -> ConfigMap. The chart runs these through `toYaml`
+# straight into ConfigMap `data`, which only accepts strings, so EVERY value
+# here must stay quoted - an unquoted 4000 or true fails admission.
+envVar:
+  # AUTH_MODE=local is only permitted while NODE_ENV is not "production":
+  # apps/backend/src/config/env.js aborts startup on that combination. Moving to
+  # production means switching AUTH_MODE to "oidc", supplying OIDC_ISSUER /
+  # OIDC_AUDIENCE / OIDC_JWKS_URI, and setting MONGODB_TLS to "true".
+  NODE_ENV: "development"
+  AUTH_MODE: "local"
+  MONGODB_TLS: "false"
+
+  PORT: "4000"
+  LOG_LEVEL: "info"
+
+  # The SPA reaches the API same-origin through its own nginx, so this is only
+  # a backstop. It must stay an explicit allow-list; env.js rejects "*".
+  # Must be the scheme the BROWSER sends, matched as an exact string
+  # (src/app.js compares with includes(), no normalisation). The ingress sets
+  # ssl-redirect, so the SPA is always served over https and its Origin header
+  # is https - an http:// entry here never matches and every POST 403s.
+  CORS_ORIGINS: "https://sc-assignment-172.199.85.126.nip.io"
+
+  # Hops that rewrite X-Forwarded-For in front of this pod: the ingress
+  # controller, then the web pod's nginx. Every per-IP rate limit keys on the
+  # address this resolves to, so too high lets a client spoof the header.
+  TRUST_PROXY_HOPS: "2"
+
+  FIELD_ENC_KEY_ID: "k1"
+  JWT_ISSUER: "sg-bank-accounts"
+  JWT_AUDIENCE: "sg-bank-accounts-web"
+
+  ACCESS_TOKEN_TTL_SECONDS: "900"
+  REFRESH_TOKEN_TTL_SECONDS: "28800"
+  REFRESH_IDLE_TIMEOUT_SECONDS: "1800"
+
+# Secrets -> ExternalSecret, pulled from the ClusterSecretStore at runtime.
+# Key on the left is the environment variable; value on the right is the name
+# of the entry in the backing store. Nothing sensitive lives in this file.
+#
+# MONGODB_URI belongs here rather than in envVar because it embeds the app
+# user's password. Compose builds it from $MONGO_APP_PASSWORD for the same
+# reason. On AKS the value is written to Key Vault by terraform/, composed from
+# the credentials it generates for the in-cluster bitnami MongoDB.
+secretEnvVar:
+  MONGODB_URI: sg-bank-mongodb-uri
+  JWT_SECRET: sg-bank-jwt-secret
+  FIELD_ENC_KEY: sg-bank-field-enc-key
+  BLIND_INDEX_KEY: sg-bank-blind-index-key
+
+# Creates the first administrator after install, so a fresh cluster is
+# loginable without a manual `kubectl exec`. Enabled on the API tier only -
+# the SPA has no database and no seed script.
+#
+# These land in a Secret mounted by the Job alone, never by the API Deployment.
+# terraform generates the password into Key Vault; read it back with:
+#   az keyvault secret show --vault-name <vault> --name sg-bank-seed-admin-password --query value -o tsv
+#
+# The account is created with mustChangePassword, so it is one-time-use and the
+# app forces a new password at first login.
+seed:
+  enabled: true
+  secretEnvVar:
+    SEED_ADMIN_EMAIL: sg-bank-seed-admin-email
+    SEED_ADMIN_PASSWORD: sg-bank-seed-admin-password
+
+hpa:
+  enabled: false
+  replicas:
+    min: 2
+    max: 4
+  cpupercentage: 70
+  memorypercentage: 70
+
+# /healthz is a bare liveness answer; /readyz reports 503 while the Mongo
+# connection is down, so it is the one that should gate traffic.
+livenessProbe:
+  enabled: true
+  path: /healthz
+  port: 4000
+  initialDelaySeconds: 15
+
+readinessProbe:
+  enabled: true
+  path: /readyz
+  port: 4000
+  initialDelaySeconds: 15
+
+# The Dockerfile caps the V8 heap at 384MB, so the 512Mi limit leaves room for
+# it plus the runtime rather than being an arbitrary round number.
+resources:
+  limits:
+    cpu: "500m"
+    memory: "512Mi"
+  requests:
+    cpu: "125m"
+    memory: "256Mi"
+
+# Must match container.port: nginx dials sg-bank-api:4000, not :80.
+service:
+  port: 4000
+
+# The image runs read-only with an emptyDir-equivalent tmpfs in compose; there
+# is nothing to persist here.
+volumes:
+  enabled: false
+
+# No Ingress on purpose. compose puts the API on an internal network and never
+# publishes its port - the only route in is the SPA's /api/ proxy. Exposing it
+# here would undo that and put the API on the public internet.
+ingress:
+  enabled: false
