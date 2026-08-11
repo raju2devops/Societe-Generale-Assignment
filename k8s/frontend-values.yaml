@@ -86,7 +86,7 @@ volumes:
 # spin.
 ingress:
   enabled: true
-  host: sc-assignment-172.199.85.126.nip.io
+  host: sc-assignment-20.126.160.159.nip.io
   ingressClassName: nginx
   tls:
     secret: ""

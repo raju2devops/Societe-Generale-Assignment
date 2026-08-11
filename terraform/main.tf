@@ -131,13 +131,17 @@ module "keyvault" {
   tags                = local.tags
 
 
-  writer_principal_ids = merge(
-    {
-
-      terraform = data.azurerm_client_config.current.object_id
-    },
-    var.extra_secret_admin_object_ids,
-  )
+  # Azure identifies a role assignment by (scope, role, principal); the map key
+  # is only a label. Under plain `az login` auth extra_secret_admin_object_ids
+  # normally repeats the object ID Terraform already grants to itself, and the
+  # second assignment fails with 409 RoleAssignmentExists. Collapse by object ID
+  # first - keyed by ID, then flipped back - letting the caller's label win.
+  writer_principal_ids = {
+    for id, label in merge(
+      { (data.azurerm_client_config.current.object_id) = "terraform" },
+      { for l, i in var.extra_secret_admin_object_ids : i => l },
+    ) : label => id
+  }
   reader_principal_ids = {
     external-secrets = azurerm_user_assigned_identity.eso.principal_id
   }

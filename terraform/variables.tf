@@ -165,6 +165,9 @@ variable "extra_secret_admin_object_ids" {
     `az keyvault secret show`:
 
       az ad signed-in-user show --query id -o tsv
+
+    Under plain `az login` auth "whoever runs it" is already you, so this can be
+    left unset; listing your own ID anyway is harmless but redundant.
   EOT
   type        = map(string)
   default     = {}

@@ -57,7 +57,7 @@ envVar:
   # (src/app.js compares with includes(), no normalisation). The ingress sets
   # ssl-redirect, so the SPA is always served over https and its Origin header
   # is https - an http:// entry here never matches and every POST 403s.
-  CORS_ORIGINS: "https://sc-assignment-172.199.85.126.nip.io"
+  CORS_ORIGINS: "https://sc-assignment-20.126.160.159.nip.io"
 
   # Hops that rewrite X-Forwarded-For in front of this pod: the ingress
   # controller, then the web pod's nginx. Every per-IP rate limit keys on the
