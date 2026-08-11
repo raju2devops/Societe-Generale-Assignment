@@ -1,9 +1,3 @@
-/* =============================================================================
-   Societe Generale - Account Management Console
-   Palette: SG red (#E9041E) + near-black, on a warm neutral canvas.
-   No external fonts or CDNs - the CSP is `default-src 'self'` and nothing here
-   needs to weaken it.
-   ========================================================================== */
 
 :root {
   --sg-red: #e9041e;

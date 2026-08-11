@@ -1,10 +1,6 @@
 /**
  * Auth controller.
  *
- * Tokens are delivered as cookies and never appear in a response body, a URL or
- * a log line. The body carries only the profile and a "last successful login"
- * notice (Mandatory Control: "Inform the user of last successful login and any
- * failed attempts since").
  */
 import { toUserProfile } from '../dto/account.dto.js';
 import { randomToken } from '../services/crypto.service.js';
