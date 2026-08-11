@@ -1,13 +1,9 @@
-# =============================================================================
-# API image - multi-stage, non-root, no build toolchain in the runtime layer.
-# sc Mandatory Control: "Restrict web-server privileges - never run as root".
-# =============================================================================
+
 
 # --- Stage 1: dependencies ---------------------------------------------------
 FROM node:22.13.1-alpine3.21 AS deps
 WORKDIR /app
-# `npm ci` installs exactly what the lock file pins - a floating version can
-# never sneak into an image (OWASP A03:2025 Software Supply Chain Failures).
+
 COPY package.json package-lock.json* ./
 RUN npm ci --omit=dev --ignore-scripts
 
