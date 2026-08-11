@@ -1,0 +1,23 @@
+# Copy to terraform.tfvars and fill in. terraform.tfvars is git-ignored.
+
+subscription_id = "00000000-0000-0000-0000-000000000000"
+
+# Optional - the defaults are fine for a test environment.
+# name_prefix  = "sgbank"
+# environment  = "test"
+# location     = "westeurope"
+# node_count   = 1
+# node_vm_size = "Standard_D2s_v6"
+
+# Leave unset until the bitnami MongoDB chart is installed; a placeholder is
+# written to Key Vault in the meantime.
+# mongodb_uri = "mongodb://sgbank_app:<pw>@mongodb-headless.sg-bank.svc.cluster.local:27017/sgbank?replicaSet=rs0&authSource=sgbank"
+
+# Needed to see the secrets in the portal or via `az keyvault secret show`.
+# Terraform only grants the data-plane role to the identity it authenticates
+# as - the service principal - and subscription Owner does NOT cover Key Vault
+# data actions. Get your object ID with:
+#   az ad signed-in-user show --query id -o tsv
+# extra_secret_admin_object_ids = {
+#   me = "00000000-0000-0000-0000-000000000000"
+# }

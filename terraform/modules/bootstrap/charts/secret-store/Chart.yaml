@@ -1,0 +1,5 @@
+apiVersion: v2
+name: secret-store
+description: ClusterSecretStore binding External Secrets to Azure Key Vault via workload identity
+type: application
+version: 0.1.0
