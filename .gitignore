@@ -1,6 +1,6 @@
 # =============================================================================
 # Secrets - these must NEVER reach the repository.
-# Sapiens Mandatory Control: "Avoid hard-coding sensitive information".
+# sc Mandatory Control: "Avoid hard-coding sensitive information".
 # =============================================================================
 .env
 .env.*

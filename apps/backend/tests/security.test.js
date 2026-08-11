@@ -1,7 +1,7 @@
 /**
  * Security regression suite.
  *
- * Each test pins a specific control from the Sapiens Mandatory Secured
+ * Each test pins a specific control from the sc Mandatory Secured
  * Development Controls or the OWASP Top 10:2025 / API Top 10 2023. If a future
  * refactor weakens one of them, a named test fails and says which control broke.
  */

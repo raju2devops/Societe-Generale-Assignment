@@ -52,7 +52,7 @@ export const logger = pino({
     level: (label) => ({ level: label }),
   },
   // Pretty output is a development-only convenience; production emits NDJSON
-  // straight to stdout for the Sapiens SIEM shipper.
+  // straight to stdout for the sc SIEM shipper.
   ...(config.isProduction || config.isTest
     ? {}
     : { transport: { target: 'pino/file', options: { destination: 1 } } }),

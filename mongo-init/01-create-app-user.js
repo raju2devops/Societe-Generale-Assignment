@@ -5,7 +5,7 @@
  * credential set in docker-compose exists only to bootstrap this user and is
  * never used by the running service.
  *
- * Sapiens Mandatory Controls: "Apply least privilege", "Restrict web-server
+ * sc Mandatory Controls: "Apply least privilege", "Restrict web-server
  * privileges - never connect to the DB as DBADMIN", "Secure database
  * configuration".
  *

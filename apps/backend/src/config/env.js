@@ -1,7 +1,7 @@
 /**
  * Environment configuration.
  *
- * Sapiens Secure Development Principle #5 - "Fail securely".
+ * sc Secure Development Principle #5 - "Fail securely".
  * Every value is validated at boot. If a secret is missing, weak, or malformed
  * the process aborts instead of silently falling back to an insecure default.
  *
@@ -91,7 +91,7 @@ const schema = z
     }
     if (cfg.NODE_ENV === 'production' && cfg.AUTH_MODE === 'local') {
       // SECURITY-DEVIATION (accepted for this assignment, see README "Security"):
-      // Sapiens policy default is SSO via Azure Entra ID (OIDC). The local
+      // sc policy default is SSO via Azure Entra ID (OIDC). The local
       // credential store is IdP-ready but is NOT approved for production.
       ctx.addIssue({
         code: z.ZodIssueCode.custom,

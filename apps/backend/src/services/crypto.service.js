@@ -20,7 +20,7 @@
  *   keyed, so a database dump alone cannot be brute-forced without the key,
  *   which lives in Azure Key Vault and never in the database.
  * * Passwords use Node's built-in **scrypt** (N=2^15, r=8, p=2, 64-byte key,
- *   16-byte unique random salt). scrypt is explicitly permitted by the Sapiens
+ *   16-byte unique random salt). scrypt is explicitly permitted by the sc
  *   controls and, being part of the Node standard library, adds zero
  *   supply-chain surface (OWASP A03:2025).
  */

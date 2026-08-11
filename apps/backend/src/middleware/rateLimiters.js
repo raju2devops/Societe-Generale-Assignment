@@ -1,7 +1,7 @@
 /**
  * Rate limiting.
  *
- * OWASP API4:2023 (Unrestricted Resource Consumption) and the Sapiens "DDoS
+ * OWASP API4:2023 (Unrestricted Resource Consumption) and the sc "DDoS
  * protection" controls - limit resource allocation per user, quota
  * authenticated users, and limit unauthenticated access to expensive resources.
  *

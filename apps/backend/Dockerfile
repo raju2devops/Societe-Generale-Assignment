@@ -1,6 +1,6 @@
 # =============================================================================
 # API image - multi-stage, non-root, no build toolchain in the runtime layer.
-# Sapiens Mandatory Control: "Restrict web-server privileges - never run as root".
+# sc Mandatory Control: "Restrict web-server privileges - never run as root".
 # =============================================================================
 
 # --- Stage 1: dependencies ---------------------------------------------------

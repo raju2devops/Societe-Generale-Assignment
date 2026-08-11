@@ -85,7 +85,7 @@ There is no default account and no default password anywhere in this codebase.
 
 ```bash
 cd backend
-SEED_ADMIN_EMAIL='you@sapiens.com' \
+SEED_ADMIN_EMAIL='you@sc.com' \
 SEED_ADMIN_PASSWORD='<a passphrase meeting the policy>' \
 npm run seed
 ```
@@ -180,7 +180,7 @@ API=http://localhost:4000/api/v1
 # 1. sign in — keeps the cookies in a jar and captures the CSRF token
 CSRF=$(curl -s -c jar.txt -X POST "$API/auth/login" \
   -H 'Content-Type: application/json' \
-  -d '{"email":"you@sapiens.com","password":"<your password>"}' \
+  -d '{"email":"you@sc.com","password":"<your password>"}' \
   | python -c 'import json,sys; print(json.load(sys.stdin)["data"]["csrfToken"])')
 
 # 2. create an account
@@ -272,7 +272,7 @@ Access tokens are HS256 JWTs delivered in an **HttpOnly** cookie — JavaScript 
 
 Refresh tokens are opaque 256-bit CSPRNG strings stored only as a SHA-256 fingerprint, rotated on every use, with reuse detection that burns the whole session family. Idle timeout is 30 minutes; the absolute timeout survives rotation.
 
-Passwords use Node's built-in **scrypt** (N=2¹⁵, r=8, p=2, 64-byte key, unique 16-byte salt) — permitted by the Sapiens controls and, being standard library, adding zero supply-chain surface. Three failed attempts locks the account. Login failures return one identical message regardless of cause.
+Passwords use Node's built-in **scrypt** (N=2¹⁵, r=8, p=2, 64-byte key, unique 16-byte salt) — permitted by the sc controls and, being standard library, adding zero supply-chain surface. Three failed attempts locks the account. Login failures return one identical message regardless of cause.
 
 ### Authorisation
 

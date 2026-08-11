@@ -7,7 +7,7 @@
  * same object graph over in-memory repositories and exercises the real HTTP
  * stack without a database.
  *
- * Sapiens principle #1 - minimise attack surface - shows up here too: nothing
+ * sc principle #1 - minimise attack surface - shows up here too: nothing
  * is registered globally, so no module can reach a repository it was not
  * explicitly handed.
  */

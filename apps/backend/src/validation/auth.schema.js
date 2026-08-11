@@ -1,5 +1,5 @@
 /**
- * Authentication payload validation + the Sapiens password policy.
+ * Authentication payload validation + the sc password policy.
  *
  * Mandatory Controls: "Password complexity requirements", "Implement strong
  * password policies", "'Change password' requires the old password".
