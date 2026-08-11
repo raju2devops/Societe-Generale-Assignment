@@ -1,0 +1,17 @@
+# Keep secrets and local state out of the build context entirely.
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+credentials*
+secrets*
+
+node_modules
+dist
+Dockerfile
+.dockerignore
+.git
+.gitignore
+*.log
+*.md

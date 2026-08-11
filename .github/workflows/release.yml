@@ -1,0 +1,276 @@
+# Resolve the next version and publish both images to GitHub Container Registry.
+#   ghcr.io/raju2devops/sc-assignment-api
+#   ghcr.io/raju2devops/sc-assignment-web
+#
+# CI runs on every push. Publishing only happens when something under apps/
+# actually changed, so a terraform- or chart-only commit no longer burns a
+# version on images whose contents are identical.
+#
+# Deployment lives in deploy.yml and is triggered by hand - the cluster exists
+# only around a demo, and a version should be deployable long after it was
+# built without rebuilding it.
+
+name: Release
+
+on:
+  push:
+    branches: [main]
+    paths-ignore:
+      - '**.md'
+      - '.gitignore'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Exact version to publish (e.g. 1.4.0). Leave blank to auto-increment the patch.'
+        required: false
+        default: ''
+
+# Least privilege by default; each job widens only what it needs.
+permissions:
+  contents: read
+
+# A newer commit makes an in-flight build obsolete - don't pay for both. This
+# also keeps two runs from racing to claim the same patch number.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_PREFIX: sc-assignment
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # Lint, tests, chart checks and Sonar. Runs on every push, including commits
+  # that touch only terraform or the chart, so those are still verified even
+  # though they publish nothing.
+  # ---------------------------------------------------------------------------
+  ci:
+    name: CI
+    uses: ./.github/workflows/ci.yml
+    # SONAR_TOKEN is read inside the called workflow.
+    secrets: inherit
+
+  # ---------------------------------------------------------------------------
+  # Did anything that ends up inside an image actually change?
+  # ---------------------------------------------------------------------------
+  changes:
+    name: Detect app changes
+    runs-on: ubuntu-latest
+
+    permissions:
+      contents: read
+
+    outputs:
+      apps: ${{ steps.detect.outputs.apps }}
+
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@v4
+        with:
+          # Needs both ends of the push range to diff them.
+          fetch-depth: 0
+
+      - name: Compare against the previous commit
+        id: detect
+        env:
+          EVENT: ${{ github.event_name }}
+          BEFORE: ${{ github.event.before }}
+          AFTER: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+
+          # Fail open. A manual run, a first push, a force push or a base commit
+          # that is not in this clone all resolve to "changed". Being wrong that
+          # way costs a version number; being wrong the other way silently ships
+          # nothing when a real change needed publishing.
+          if [ "$EVENT" != "push" ] \
+            || [ -z "$BEFORE" ] \
+            || [ "$BEFORE" = "0000000000000000000000000000000000000000" ] \
+            || ! git cat-file -e "${BEFORE}^{commit}" 2>/dev/null; then
+            echo "No resolvable base commit ($EVENT / $BEFORE) - assuming apps changed."
+            echo "apps=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          echo "Files changed in ${BEFORE}..${AFTER}:"
+          git diff --name-only "$BEFORE" "$AFTER" | sed 's/^/  /'
+
+          if git diff --name-only "$BEFORE" "$AFTER" | grep -qE '^apps/'; then
+            echo "apps=true" >> "$GITHUB_OUTPUT"
+            echo "### Publishing: changes under \`apps/\`" >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "apps=false" >> "$GITHUB_OUTPUT"
+            echo "Nothing under apps/ changed - version and build will be skipped."
+            echo "### No image changes - skipping publish" >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+  # ---------------------------------------------------------------------------
+  # Work out the next version once, so both images agree on it.
+  # ---------------------------------------------------------------------------
+  version:
+    name: Resolve version
+    runs-on: ubuntu-latest
+    needs: changes
+    if: needs.changes.outputs.apps == 'true'
+
+    permissions:
+      contents: read
+      packages: read # list existing tags on GHCR
+
+    outputs:
+      version: ${{ steps.next.outputs.version }}
+      major_minor: ${{ steps.next.outputs.major_minor }}
+      major: ${{ steps.next.outputs.major }}
+
+    steps:
+      - name: Resolve next version
+        id: next
+        env:
+          # Interpolated into the environment rather than into the script body:
+          # a variable value can never be parsed as shell that way.
+          MAJOR: ${{ vars.MAJOR || '1' }}
+          MINOR: ${{ vars.MINOR || '0' }}
+          OVERRIDE: ${{ inputs.version }}
+          OWNER: ${{ github.repository_owner }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+
+          # Fail fast on a malformed variable rather than publishing junk tags.
+          for pair in "MAJOR=$MAJOR" "MINOR=$MINOR"; do
+            name=${pair%%=*}; value=${pair#*=}
+            if ! printf '%s' "$value" | grep -qE '^[0-9]+$'; then
+              echo "::error::Repository variable $name must be a non-negative integer, got '$value'"
+              exit 1
+            fi
+          done
+
+          if [ -n "$OVERRIDE" ]; then
+            if ! printf '%s' "$OVERRIDE" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+$'; then
+              echo "::error::version input must look like 1.4.0, got '$OVERRIDE'"
+              exit 1
+            fi
+            version="$OVERRIDE"
+            echo "Using the version supplied to workflow_dispatch."
+          else
+            owner=$(printf '%s' "$OWNER" | tr '[:upper:]' '[:lower:]')
+            # GHCR accepts the run's GITHUB_TOKEN, base64-encoded, as a bearer.
+            token=$(printf '%s' "$GH_TOKEN" | base64 -w0)
+            highest=-1
+
+            for image in api web; do
+              repo="${owner}/${IMAGE_PREFIX}-${image}"
+              # A package that does not exist yet answers 404 with an error
+              # body; `.tags // []` turns that into "no tags" rather than a
+              # failure, so the very first run starts cleanly at patch 0.
+              body=$(curl -sSL --max-time 30 \
+                       -H "Authorization: Bearer ${token}" \
+                       "https://${REGISTRY}/v2/${repo}/tags/list?n=1000" || true)
+              if [ -z "$body" ]; then body='{}'; fi
+
+              patches=$(printf '%s' "$body" \
+                | jq -r --arg re "^${MAJOR}\\.${MINOR}\\.[0-9]+$" \
+                    '(.tags // [])[] | select(test($re))' \
+                | cut -d. -f3)
+
+              for p in $patches; do
+                if [ "$p" -gt "$highest" ]; then highest=$p; fi
+              done
+              echo "  ${repo}: highest ${MAJOR}.${MINOR} patch so far -> ${highest}"
+            done
+
+            version="${MAJOR}.${MINOR}.$((highest + 1))"
+          fi
+
+          {
+            echo "version=${version}"
+            echo "major_minor=${version%.*}"
+            echo "major=v${version%%.*}"
+          } >> "$GITHUB_OUTPUT"
+
+          echo "### Next version: \`${version}\`" >> "$GITHUB_STEP_SUMMARY"
+
+  # ---------------------------------------------------------------------------
+  # Build both tiers in parallel and publish them under that version.
+  # ---------------------------------------------------------------------------
+  build:
+    name: ${{ matrix.name }}
+    runs-on: ubuntu-latest
+    # Nothing is published unless lint, tests and the chart all pass, and only
+    # when something under apps/ changed. `version` is skipped in that case,
+    # which skips this job with it.
+    needs: [ci, changes, version]
+
+    permissions:
+      contents: read
+      packages: write # push to GHCR
+      id-token: write # OIDC identity for the provenance attestation
+      attestations: write
+
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: api
+            context: ./apps/backend
+          - name: web
+            context: ./apps/frontend
+
+    steps:
+      # Actions are pinned to major tags for readability. To harden further,
+      # replace each `@vN` with the full commit SHA of that release.
+      - name: Check out the repository
+        uses: actions/checkout@v4
+
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Derive image tags and labels
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ github.repository_owner }}/${{ env.IMAGE_PREFIX }}-${{ matrix.name }}
+          tags: |
+            type=raw,value=${{ needs.version.outputs.version }}
+            type=raw,value=${{ needs.version.outputs.major_minor }}
+            type=raw,value=${{ needs.version.outputs.major }}
+            type=raw,value=latest
+            type=sha,prefix=sha-,format=long
+          labels: |
+            org.opencontainers.image.title=${{ env.IMAGE_PREFIX }}-${{ matrix.name }}
+            org.opencontainers.image.description=Societe Generale bank account management - ${{ matrix.name }} tier
+            org.opencontainers.image.version=${{ needs.version.outputs.version }}
+
+      - name: Build and push
+        id: build
+        uses: docker/build-push-action@v6
+        with:
+          context: ${{ matrix.context }}
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          # AKS node pools are amd64. Add linux/arm64 here if you need it -
+          # expect a much slower build, since npm ci then runs under QEMU.
+          platforms: linux/amd64
+          provenance: true
+          sbom: true
+          # Only the SPA reads a build arg; it is optional and non-secret.
+          build-args: |
+            VITE_BRAND_LOGO_URL=${{ vars.VITE_BRAND_LOGO_URL }}
+          cache-from: type=gha,scope=${{ matrix.name }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.name }}
+
+      - name: Attest build provenance
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-name: ${{ env.REGISTRY }}/${{ github.repository_owner }}/${{ env.IMAGE_PREFIX }}-${{ matrix.name }}
+          subject-digest: ${{ steps.build.outputs.digest }}
+          push-to-registry: true

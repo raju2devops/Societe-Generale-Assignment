@@ -1,0 +1,54 @@
+# =============================================================================
+# Secrets - these must NEVER reach the repository.
+# Sapiens Mandatory Control: "Avoid hard-coding sensitive information".
+# =============================================================================
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.pfx
+*.jks
+credentials*
+secrets*
+secret*.yaml
+# ...but this one is a Helm TEMPLATE, not secret material: it maps environment
+# variable names to Key Vault entry names and holds no values. Without this
+# negation the chart is published without its ExternalSecret, and the API pod
+# waits forever on a Secret nothing ever creates.
+!helm-chart/templates/secrets.yaml
+.azure/
+
+# Terraform - state holds the generated crypto keys in plaintext.
+# .terraform.lock.hcl is deliberately NOT ignored: it pins provider versions
+# and hashes so everyone resolves the same ones.
+.terraform/
+*.tfstate
+*.tfstate.*
+*.tfvars
+!*.tfvars.example
+crash.log
+
+# Dependencies / build output
+node_modules/
+dist/
+build/
+coverage/
+*.tsbuildinfo
+
+# Logs and local state
+logs/
+*.log
+npm-debug.log*
+yarn-error.log*
+.pnpm-debug.log*
+mongo-data/
+
+# Tooling / editor
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+.claude/
+*.swp

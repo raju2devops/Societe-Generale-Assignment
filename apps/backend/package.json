@@ -1,0 +1,52 @@
+{
+  "name": "sg-bank-accounts-backend",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Societe Generale Bank Account Management - REST API (Node.js / Express / MongoDB)",
+  "license": "UNLICENSED",
+  "engines": {
+    "node": ">=20.11.0"
+  },
+  "scripts": {
+    "start": "node src/server.js",
+    "dev": "node --watch src/server.js",
+    "test": "node --experimental-vm-modules node_modules/jest/bin/jest.js --runInBand",
+    "test:coverage": "node --experimental-vm-modules node_modules/jest/bin/jest.js --runInBand --coverage",
+    "lint": "eslint src tests",
+    "seed": "node scripts/seed-admin.js",
+    "genkeys": "node scripts/generate-keys.js"
+  },
+  "dependencies": {
+    "compression": "1.7.5",
+    "cookie-parser": "1.4.7",
+    "cors": "2.8.5",
+    "dotenv": "16.4.5",
+    "express": "4.21.2",
+    "express-rate-limit": "7.4.1",
+    "helmet": "7.2.0",
+    "jsonwebtoken": "9.0.2",
+    "mongoose": "8.9.5",
+    "pino": "9.5.0",
+    "pino-http": "10.3.0",
+    "zod": "3.24.1"
+  },
+  "devDependencies": {
+    "eslint": "8.57.1",
+    "jest": "29.7.0",
+    "supertest": "7.0.0"
+  },
+  "jest": {
+    "testEnvironment": "node",
+    "transform": {},
+    "setupFiles": [
+      "<rootDir>/tests/setup-env.js"
+    ],
+    "testMatch": [
+      "**/tests/**/*.test.js"
+    ],
+    "collectCoverageFrom": [
+      "src/**/*.js"
+    ]
+  }
+}

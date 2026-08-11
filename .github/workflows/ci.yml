@@ -1,0 +1,182 @@
+# Quality gates: lint both tiers, run the API test suite, check the chart, and
+# feed coverage to SonarQube Cloud.
+#
+# workflow_call only, deliberately. A `push` trigger here as well would run
+# every one of these jobs twice - once standalone and once through release.yml,
+# which calls this workflow to gate publishing.
+
+name: CI
+
+on:
+  workflow_call:
+
+permissions:
+  contents: read
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # Lint both tiers and run the API test suite.
+  # ---------------------------------------------------------------------------
+  test_app:
+    name: Test ${{ matrix.app }}
+    runs-on: ubuntu-latest
+    # A suite that finishes but leaves a handle open hangs the runner rather
+    # than failing. Cap it so that shows up as a red job in minutes.
+    timeout-minutes: 10
+
+    permissions:
+      contents: read
+
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - app: backend
+            dir: apps/backend
+            # The suite runs the real HTTP stack against in-memory
+            # repositories and mints its own keys in tests/setup-env.js, so it
+            # needs no database and no secrets.
+            run_tests: true
+          - app: frontend
+            dir: apps/frontend
+            run_tests: false
+
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@v4
+
+      # Matches the Dockerfiles (node:22.13.1-alpine) so CI cannot pass on a
+      # runtime the image never uses.
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: ${{ matrix.dir }}/package-lock.json
+
+      # `npm ci` installs exactly the lock file, same as the image build.
+      - name: Install dependencies
+        working-directory: ${{ matrix.dir }}
+        run: npm ci
+
+      - name: Lint
+        working-directory: ${{ matrix.dir }}
+        run: npm run lint
+
+      # --coverage rather than a bare run, so the same execution feeds Sonar.
+      # The suite is unchanged; only the reporter is added.
+      - name: Test
+        if: matrix.run_tests
+        working-directory: ${{ matrix.dir }}
+        run: npm run test:coverage
+
+      - name: Upload coverage
+        if: matrix.run_tests
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.app }}-coverage
+          path: ${{ matrix.dir }}/coverage/lcov.info
+          retention-days: 1
+
+  # ---------------------------------------------------------------------------
+  # Render the chart the way it is actually deployed - against each tier's
+  # values file, not the chart defaults, which are placeholders.
+  # ---------------------------------------------------------------------------
+  helm:
+    name: Helm chart Test - template
+    runs-on: ubuntu-latest
+
+    permissions:
+      contents: read
+
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@v4
+
+      - name: Set up Helm
+        uses: azure/setup-helm@v4
+
+      - name: Lint chart against both values files
+        run: |
+          set -euo pipefail
+          for tier in backend frontend; do
+            echo "::group::helm lint ($tier)"
+            helm lint helm-chart -f "k8s/${tier}-values.yaml"
+            echo "::endgroup::"
+          done
+
+      # lint checks templates parse; template proves they render to something,
+      # which catches a values key that silently produces nothing.
+      - name: Render chart against both values files
+        run: |
+          set -euo pipefail
+          for tier in backend frontend; do
+            echo "::group::helm template ($tier)"
+            helm template sg-bank-"$tier" helm-chart -f "k8s/${tier}-values.yaml"
+            echo "::endgroup::"
+          done
+
+  # ---------------------------------------------------------------------------
+  # Static analysis and coverage.
+  #
+  # Kept in the same workflow as test_app on purpose: it consumes the
+  # backend-coverage artifact that job uploads, and keeping that hand-off
+  # inside one file means the CI/release split cannot perturb it.
+  #
+  # Not wired into release.yml's build gate yet: on a first analysis Sonar can
+  # treat the whole codebase as new code, and the default gate wants 80%
+  # coverage on new code against the backend's ~65%. Gating on that from day
+  # one would stop every image publishing.
+  # ---------------------------------------------------------------------------
+  sonar:
+    name: SonarQube Cloud
+    runs-on: ubuntu-latest
+    needs: test_app
+    timeout-minutes: 10
+
+    permissions:
+      contents: read
+
+    env:
+      SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@v4
+        with:
+          # Sonar reads git blame to attribute issues and decide what counts as
+          # new code. The default shallow clone has no history, so every line
+          # looks new and the new-code period is meaningless.
+          fetch-depth: 0
+
+      - name: Download backend coverage
+        uses: actions/download-artifact@v4
+        with:
+          name: backend-coverage
+          path: apps/backend/coverage
+
+      # jest writes `SF:src/app.js` - relative to apps/backend, its rootDir.
+      # The scanner runs from the repository root, where that path does not
+      # exist, so without this rewrite Sonar silently reports 0% coverage and
+      # does not error. Verified against real jest output before writing this.
+      - name: Rebase coverage paths onto the repository root
+        run: |
+          set -euo pipefail
+          report=apps/backend/coverage/lcov.info
+          sed -i 's|^SF:|SF:apps/backend/|' "$report"
+          echo "Rebased paths, first three entries:"
+          grep -m3 '^SF:' "$report"
+          # Fail loudly rather than uploading a report that resolves to nothing.
+          first=$(grep -m1 '^SF:' "$report" | cut -d: -f2-)
+          test -f "$first" || { echo "::error::lcov path does not resolve: $first"; exit 1; }
+
+      - name: Scan
+        if: env.SONAR_TOKEN != ''
+        uses: SonarSource/sonarqube-scan-action@v8
+
+      - name: Explain the skip
+        if: env.SONAR_TOKEN == ''
+        run: |
+          echo "::notice::SONAR_TOKEN is not set, so analysis was skipped. \
+          Add the secret and set sonar.organization in sonar-project.properties \
+          to enable it."

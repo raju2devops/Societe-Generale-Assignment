@@ -1,0 +1,472 @@
+# =============================================================================
+# SUPERSEDED - kept as a fallback, not part of the normal pipeline.
+#
+# Replaced by:
+#   ci.yml       lint, tests, chart checks, Sonar   (workflow_call)
+#   release.yml  version + build + push             (push to main, dispatch)
+#   deploy.yml   helm release onto AKS              (manual, version input)
+#
+# The `push` trigger is REMOVED on purpose. If this file kept it, every commit
+# would run both this workflow and release.yml: CI twice over, and two
+# independent version resolutions publishing two different tags for the same
+# commit. workflow_dispatch only means it never fires by itself but can still
+# be run by hand if the split ever needs backing out in a hurry.
+#
+# Build the API and SPA images and publish them to GitHub Container Registry.
+#   ghcr.io/raju2devops/sc-assignment-api
+#   ghcr.io/raju2devops/sc-assignment-web
+# =============================================================================
+
+name: Legacy build and push (superseded)
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Exact version to publish (e.g. 1.4.0). Leave blank to auto-increment the patch.'
+        required: false
+        default: ''
+
+# Least privilege by default; each job widens only what it needs.
+permissions:
+  contents: read
+
+# A newer commit makes an in-flight build obsolete - don't pay for both. This
+# also keeps two runs from racing to claim the same patch number.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_PREFIX: sc-assignment
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # Lint both tiers and run the API test suite. Gates `build`, so a failure
+  # here means nothing is published rather than a broken image reaching GHCR.
+  # ---------------------------------------------------------------------------
+  test_app:
+    name: Test ${{ matrix.app }}
+    runs-on: ubuntu-latest
+    # A suite that finishes but leaves a handle open hangs the runner rather
+    # than failing. Cap it so that shows up as a red job in minutes.
+    timeout-minutes: 10
+
+    permissions:
+      contents: read
+
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - app: backend
+            dir: apps/backend
+            # The suite runs the real HTTP stack against in-memory
+            # repositories and mints its own keys in tests/setup-env.js, so it
+            # needs no database and no secrets.
+            run_tests: true
+          - app: frontend
+            dir: apps/frontend
+            run_tests: false
+
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@v4
+
+      # Matches the Dockerfiles (node:22.13.1-alpine) so CI cannot pass on a
+      # runtime the image never uses.
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: ${{ matrix.dir }}/package-lock.json
+
+      # `npm ci` installs exactly the lock file, same as the image build.
+      - name: Install dependencies
+        working-directory: ${{ matrix.dir }}
+        run: npm ci
+
+      - name: Lint
+        working-directory: ${{ matrix.dir }}
+        run: npm run lint
+
+      # --coverage rather than a bare run, so the same execution feeds Sonar.
+      # The suite is unchanged; only the reporter is added.
+      - name: Test
+        if: matrix.run_tests
+        working-directory: ${{ matrix.dir }}
+        run: npm run test:coverage
+
+      - name: Upload coverage
+        if: matrix.run_tests
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.app }}-coverage
+          path: ${{ matrix.dir }}/coverage/lcov.info
+          retention-days: 1
+
+  # ---------------------------------------------------------------------------
+  # Render the chart the way it is actually deployed - against each tier's
+  # values file, not the chart defaults, which are placeholders.
+  # ---------------------------------------------------------------------------
+  helm:
+    name: Helm chart Test - template 
+    runs-on: ubuntu-latest
+
+    permissions:
+      contents: read
+
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@v4
+
+      - name: Set up Helm
+        uses: azure/setup-helm@v4
+
+      - name: Lint chart against both values files
+        run: |
+          set -euo pipefail
+          for tier in backend frontend; do
+            echo "::group::helm lint ($tier)"
+            helm lint helm-chart -f "k8s/${tier}-values.yaml"
+            echo "::endgroup::"
+          done
+
+      # lint checks templates parse; template proves they render to something,
+      # which catches a values key that silently produces nothing.
+      - name: Render chart against both values files
+        run: |
+          set -euo pipefail
+          for tier in backend frontend; do
+            echo "::group::helm template ($tier)"
+            helm template sg-bank-"$tier" helm-chart -f "k8s/${tier}-values.yaml"
+            echo "::endgroup::"
+          done
+
+  # ---------------------------------------------------------------------------
+  # Static analysis and coverage. Deliberately NOT in build.needs yet: on a
+  # first analysis Sonar can treat the whole codebase as new code, and the
+  # default gate wants 80% coverage on new code against the backend's ~65%.
+  # Gating on that from day one would stop every image publishing. Add `sonar`
+  # to build.needs once the first report is green and the new-code baseline is
+  # set.
+  # ---------------------------------------------------------------------------
+  sonar:
+    name: SonarQube Cloud
+    runs-on: ubuntu-latest
+    # Consumes the coverage artifact that job uploads.
+    needs: test_app
+    timeout-minutes: 10
+
+    permissions:
+      contents: read
+
+    env:
+      SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@v4
+        with:
+          # Sonar reads git blame to attribute issues and decide what counts as
+          # new code. The default shallow clone has no history, so every line
+          # looks new and the new-code period is meaningless.
+          fetch-depth: 0
+
+      - name: Download backend coverage
+        uses: actions/download-artifact@v4
+        with:
+          name: backend-coverage
+          path: apps/backend/coverage
+
+      # jest writes `SF:src/app.js` - relative to apps/backend, its rootDir.
+      # The scanner runs from the repository root, where that path does not
+      # exist, so without this rewrite Sonar silently reports 0% coverage and
+      # does not error. Verified against real jest output before writing this.
+      - name: Rebase coverage paths onto the repository root
+        run: |
+          set -euo pipefail
+          report=apps/backend/coverage/lcov.info
+          sed -i 's|^SF:|SF:apps/backend/|' "$report"
+          echo "Rebased paths, first three entries:"
+          grep -m3 '^SF:' "$report"
+          # Fail loudly rather than uploading a report that resolves to nothing.
+          first=$(grep -m1 '^SF:' "$report" | cut -d: -f2-)
+          test -f "$first" || { echo "::error::lcov path does not resolve: $first"; exit 1; }
+
+      - name: Scan
+        if: env.SONAR_TOKEN != ''
+        uses: SonarSource/sonarqube-scan-action@v8
+
+      - name: Explain the skip
+        if: env.SONAR_TOKEN == ''
+        run: |
+          echo "::notice::SONAR_TOKEN is not set, so analysis was skipped. \
+          Add the secret and set sonar.organization in sonar-project.properties \
+          to enable it. This job stays green either way until sonar is added to \
+          build.needs."
+
+  # ---------------------------------------------------------------------------
+  # Work out the next version once, so both images agree on it.
+  # ---------------------------------------------------------------------------
+  version:
+    name: Resolve version
+    runs-on: ubuntu-latest
+
+    permissions:
+      contents: read
+      packages: read # list existing tags on GHCR
+
+    outputs:
+      version: ${{ steps.next.outputs.version }}
+      major_minor: ${{ steps.next.outputs.major_minor }}
+      major: ${{ steps.next.outputs.major }}
+
+    steps:
+      - name: Resolve next version
+        id: next
+        env:
+          # Interpolated into the environment rather than into the script body:
+          # a variable value can never be parsed as shell that way.
+          MAJOR: ${{ vars.MAJOR || '1' }}
+          MINOR: ${{ vars.MINOR || '0' }}
+          OVERRIDE: ${{ inputs.version }}
+          OWNER: ${{ github.repository_owner }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+
+          # Fail fast on a malformed variable rather than publishing junk tags.
+          for pair in "MAJOR=$MAJOR" "MINOR=$MINOR"; do
+            name=${pair%%=*}; value=${pair#*=}
+            if ! printf '%s' "$value" | grep -qE '^[0-9]+$'; then
+              echo "::error::Repository variable $name must be a non-negative integer, got '$value'"
+              exit 1
+            fi
+          done
+
+          if [ -n "$OVERRIDE" ]; then
+            if ! printf '%s' "$OVERRIDE" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+$'; then
+              echo "::error::version input must look like 1.4.0, got '$OVERRIDE'"
+              exit 1
+            fi
+            version="$OVERRIDE"
+            echo "Using the version supplied to workflow_dispatch."
+          else
+            owner=$(printf '%s' "$OWNER" | tr '[:upper:]' '[:lower:]')
+            # GHCR accepts the run's GITHUB_TOKEN, base64-encoded, as a bearer.
+            token=$(printf '%s' "$GH_TOKEN" | base64 -w0)
+            highest=-1
+
+            for image in api web; do
+              repo="${owner}/${IMAGE_PREFIX}-${image}"
+              # A package that does not exist yet answers 404 with an error
+              # body; `.tags // []` turns that into "no tags" rather than a
+              # failure, so the very first run starts cleanly at patch 0.
+              body=$(curl -sSL --max-time 30 \
+                       -H "Authorization: Bearer ${token}" \
+                       "https://${REGISTRY}/v2/${repo}/tags/list?n=1000" || true)
+              if [ -z "$body" ]; then body='{}'; fi
+
+              patches=$(printf '%s' "$body" \
+                | jq -r --arg re "^${MAJOR}\\.${MINOR}\\.[0-9]+$" \
+                    '(.tags // [])[] | select(test($re))' \
+                | cut -d. -f3)
+
+              for p in $patches; do
+                if [ "$p" -gt "$highest" ]; then highest=$p; fi
+              done
+              echo "  ${repo}: highest ${MAJOR}.${MINOR} patch so far -> ${highest}"
+            done
+
+            version="${MAJOR}.${MINOR}.$((highest + 1))"
+          fi
+
+          {
+            echo "version=${version}"
+            echo "major_minor=${version%.*}"
+            echo "major=v${version%%.*}"
+          } >> "$GITHUB_OUTPUT"
+
+          echo "### Next version: \`${version}\`" >> "$GITHUB_STEP_SUMMARY"
+  # Build both tiers in parallel and publish them under that version.
+  build:
+    name: ${{ matrix.name }}
+    runs-on: ubuntu-latest
+    # Nothing is published unless lint, tests and the chart all pass.
+    needs: [version, test_app, helm]
+
+    permissions:
+      contents: read
+      packages: write # push to GHCR
+      id-token: write # OIDC identity for the provenance attestation
+      attestations: write
+
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: api
+            context: ./apps/backend
+          - name: web
+            context: ./apps/frontend
+
+    steps:
+      # Actions are pinned to major tags for readability. To harden further,
+      # replace each `@vN` with the full commit SHA of that release.
+      - name: Check out the repository
+        uses: actions/checkout@v4
+
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Derive image tags and labels
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ github.repository_owner }}/${{ env.IMAGE_PREFIX }}-${{ matrix.name }}
+          tags: |
+            type=raw,value=${{ needs.version.outputs.version }}
+            type=raw,value=${{ needs.version.outputs.major_minor }}
+            type=raw,value=${{ needs.version.outputs.major }}
+            type=raw,value=latest
+            type=sha,prefix=sha-,format=long
+          labels: |
+            org.opencontainers.image.title=${{ env.IMAGE_PREFIX }}-${{ matrix.name }}
+            org.opencontainers.image.description=Societe Generale bank account management - ${{ matrix.name }} tier
+            org.opencontainers.image.version=${{ needs.version.outputs.version }}
+
+      - name: Build and push
+        id: build
+        uses: docker/build-push-action@v6
+        with:
+          context: ${{ matrix.context }}
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          # AKS node pools are amd64. Add linux/arm64 here if you need it -
+          # expect a much slower build, since npm ci then runs under QEMU.
+          platforms: linux/amd64
+          provenance: true
+          sbom: true
+          # Only the SPA reads a build arg; it is optional and non-secret.
+          build-args: |
+            VITE_BRAND_LOGO_URL=${{ vars.VITE_BRAND_LOGO_URL }}
+          cache-from: type=gha,scope=${{ matrix.name }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.name }}
+
+      - name: Attest build provenance
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-name: ${{ env.REGISTRY }}/${{ github.repository_owner }}/${{ env.IMAGE_PREFIX }}-${{ matrix.name }}
+          subject-digest: ${{ steps.build.outputs.digest }}
+          push-to-registry: true
+
+  # ---------------------------------------------------------------------------
+  # Roll the freshly published images onto AKS.
+  #
+  # Deploys the version this run produced via --set image.tag, NOT the tag
+  # pinned in k8s/*-values.yaml. That pinned value stays as the default for a
+  # manual `helm upgrade` from a workstation; without the override, CD would
+  # redeploy whatever was pinned and every run would be a no-op.
+  # ---------------------------------------------------------------------------
+  deploy:
+    name: Deploy to AKS
+    runs-on: ubuntu-latest
+    needs: [version, build]
+    timeout-minutes: 15
+
+    # Off unless the repository variable DEPLOY_ENABLED is exactly "true".
+    #
+    # The cluster is built shortly before a demo and destroyed afterwards, so
+    # for most of its life there is nothing to deploy to. Without this the job
+    # would fail on every push, which trains you to ignore a red pipeline.
+    # Flip the variable when the cluster is up:
+    #   Settings -> Secrets and variables -> Actions -> Variables
+    # A skipped job shows greyed in the UI, so it is obvious no deploy ran.
+    if: vars.DEPLOY_ENABLED == 'true'
+
+    permissions:
+      contents: read
+
+    env:
+      RESOURCE_GROUP: ${{ vars.AKS_RESOURCE_GROUP || 'sgbank-test-rg' }}
+      CLUSTER_NAME: ${{ vars.AKS_CLUSTER_NAME || 'sgbank-test-aks' }}
+      NAMESPACE: ${{ vars.K8S_NAMESPACE || 'sg-bank' }}
+      VERSION: ${{ needs.version.outputs.version }}
+
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@v4
+
+      - name: Log in to Azure
+        uses: azure/login@v2
+        with:
+          creds: ${{ secrets.AZURE_CREDENTIALS }}
+
+      - name: Set up Helm
+        uses: azure/setup-helm@v4
+
+      - name: Fetch cluster credentials
+        run: |
+          set -euo pipefail
+          az aks get-credentials \
+            --resource-group "$RESOURCE_GROUP" \
+            --name "$CLUSTER_NAME" \
+            --overwrite-existing
+          kubectl version --client=false -o yaml | head -5
+
+      # helm --create-namespace only fires on first install; creating it here
+      # keeps the two releases from racing to create it.
+      - name: Ensure namespace
+        run: kubectl create namespace "$NAMESPACE" --dry-run=client -o yaml | kubectl apply -f -
+
+      # The API first: the web image's nginx resolves sg-bank-api at startup and
+      # crashloops with "host not found in upstream" if that Service is absent.
+      - name: Deploy API
+        run: |
+          set -euo pipefail
+          helm upgrade --install sg-bank-api ./helm-chart \
+            -f k8s/backend-values.yaml \
+            -n "$NAMESPACE" \
+            --set image.tag="$VERSION" \
+            --wait --timeout 10m
+
+      - name: Deploy web
+        run: |
+          set -euo pipefail
+          helm upgrade --install sg-bank-web ./helm-chart \
+            -f k8s/frontend-values.yaml \
+            -n "$NAMESPACE" \
+            --set image.tag="$VERSION" \
+            --wait --timeout 10m
+
+      # --wait already gates on readiness; this makes the running versions
+      # visible in the log and the summary rather than implied.
+      - name: Report what is running
+        run: |
+          set -euo pipefail
+          kubectl -n "$NAMESPACE" get deploy,pods -o wide
+          {
+            echo "### Deployed \`$VERSION\` to $CLUSTER_NAME/$NAMESPACE"
+            echo
+            echo '```'
+            kubectl -n "$NAMESPACE" get deploy -o custom-columns=NAME:.metadata.name,IMAGE:.spec.template.spec.containers[0].image,READY:.status.readyReplicas
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Surface why it failed
+        if: failure()
+        run: |
+          kubectl -n "$NAMESPACE" get pods -o wide || true
+          kubectl -n "$NAMESPACE" describe pods | tail -60 || true
+          kubectl -n "$NAMESPACE" logs -l app=sg-bank-api --tail=50 || true

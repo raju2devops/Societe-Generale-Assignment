@@ -1,0 +1,106 @@
+# =============================================================================
+# Local development stack: MongoDB + API + SPA.
+#
+# Secrets come from your shell environment, NOT from this file and NOT from a
+# committed .env. Generate them once and export them:
+#
+#   cd backend && npm run genkeys        # prints the three crypto keys
+#   export JWT_SECRET=... FIELD_ENC_KEY=... BLIND_INDEX_KEY=...
+#   export MONGO_ROOT_PASSWORD=... MONGO_APP_PASSWORD=...
+#   docker compose up --build
+#
+# Compose FAILS if any of them is unset - the `:?` syntax is a deliberate
+# fail-securely gate rather than a silent insecure default.
+#
+# Open http://localhost:8080
+# =============================================================================
+
+name: sg-bank-accounts
+
+services:
+  mongodb:
+    image: mongo:7.0.16
+    container_name: sg-bank-mongo
+    environment:
+      # Root exists only to bootstrap. The application never uses it.
+      MONGO_INITDB_ROOT_USERNAME: root
+      MONGO_INITDB_ROOT_PASSWORD: ${MONGO_ROOT_PASSWORD:?set MONGO_ROOT_PASSWORD}
+      MONGO_INITDB_DATABASE: sgbank
+      APP_PASSWORD: ${MONGO_APP_PASSWORD:?set MONGO_APP_PASSWORD}
+    volumes:
+      - mongo-data:/data/db
+      # Runs once, on an empty volume: creates the least-privilege app user.
+      - ./mongo-init:/docker-entrypoint-initdb.d:ro
+    # Not published to the host: only the API can reach the database.
+    expose:
+      - '27017'
+    networks:
+      - backend
+    healthcheck:
+      test: ['CMD', 'mongosh', '--quiet', '--eval', "db.adminCommand('ping').ok"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
+    security_opt:
+      - no-new-privileges:true
+    restart: unless-stopped
+
+  api:
+    build:
+      context: ./apps/backend
+    container_name: sg-bank-api
+    environment:
+      NODE_ENV: development
+      PORT: '4000'
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+      CORS_ORIGINS: http://localhost:8080,http://localhost:5173
+      MONGODB_URI: mongodb://sgbank_app:${MONGO_APP_PASSWORD}@mongodb:27017/sgbank?authSource=sgbank
+      MONGODB_TLS: 'false'
+      JWT_SECRET: ${JWT_SECRET:?run `npm run genkeys` in ./backend}
+      FIELD_ENC_KEY: ${FIELD_ENC_KEY:?run `npm run genkeys` in ./backend}
+      BLIND_INDEX_KEY: ${BLIND_INDEX_KEY:?run `npm run genkeys` in ./backend}
+      FIELD_ENC_KEY_ID: k1
+      AUTH_MODE: local
+    depends_on:
+      mongodb:
+        condition: service_healthy
+    expose:
+      - '4000'
+    networks:
+      - backend
+      - frontend
+    security_opt:
+      - no-new-privileges:true
+    read_only: true
+    tmpfs:
+      - /tmp:size=16m,mode=1777
+    cap_drop:
+      - ALL
+    restart: unless-stopped
+
+  web:
+    build:
+      context: ./apps/frontend
+    container_name: sg-bank-web
+    depends_on:
+      - api
+    ports:
+      - '8080:8080'
+    networks:
+      - frontend
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    restart: unless-stopped
+
+# The database sits on a network the web tier cannot reach. Segmentation is the
+# cheapest form of defence in depth available here.
+networks:
+  frontend:
+  backend:
+    internal: true
+
+volumes:
+  mongo-data:

@@ -1,0 +1,20 @@
+# Keep secrets and local state out of the build context entirely.
+# Anything listed here can never end up in an image layer, even by accident.
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+credentials*
+secrets*
+
+node_modules
+coverage
+tests
+.eslintrc.json
+Dockerfile
+.dockerignore
+.git
+.gitignore
+*.log
+*.md

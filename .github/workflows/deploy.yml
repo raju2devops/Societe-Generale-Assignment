@@ -1,0 +1,107 @@
+
+name: Deploy to AKS
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Image tag to deploy, e.g. 1.0.5. Leave blank for latest.'
+        required: false
+        default: ''
+      namespace:
+        description: 'Target namespace. Leave blank for the K8S_NAMESPACE variable, or sg-bank.'
+        required: false
+        default: ''
+
+permissions:
+  contents: read
+
+# Its own group, and deliberately NOT cancel-in-progress: interrupting a
+# `helm upgrade` part-way through leaves the release in a half-applied state.
+concurrency:
+  group: deploy-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    name: Deploy
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    permissions:
+      contents: read
+
+    env:
+      RESOURCE_GROUP: ${{ vars.AKS_RESOURCE_GROUP || 'sgbank-test-rg' }}
+      CLUSTER_NAME: ${{ vars.AKS_CLUSTER_NAME || 'sgbank-test-aks' }}
+      NAMESPACE: ${{ inputs.namespace || vars.K8S_NAMESPACE || 'sg-bank' }}
+      # `latest` always exists and always points at the newest build. Pass an
+      # explicit version when you need a specific one - it is the reproducible
+      # choice, and the only way to roll back.
+      VERSION: ${{ inputs.version || 'latest' }}
+
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@v4
+
+      - name: Log in to Azure
+        uses: azure/login@v2
+        with:
+          creds: ${{ secrets.AZURE_CREDENTIALS }}
+
+      - name: Set up Helm
+        uses: azure/setup-helm@v4
+
+      - name: Fetch cluster credentials
+        run: |
+          set -euo pipefail
+          az aks get-credentials \
+            --resource-group "$RESOURCE_GROUP" \
+            --name "$CLUSTER_NAME" \
+            --overwrite-existing
+          kubectl version -o yaml | head -5
+
+      # helm --create-namespace only fires on first install; creating it here
+      # keeps the two releases from racing to create it.
+      - name: Ensure namespace
+        run: kubectl create namespace "$NAMESPACE" --dry-run=client -o yaml | kubectl apply -f -
+
+      # The API first: the web image's nginx resolves sg-bank-api at startup and
+      # crashloops with "host not found in upstream" if that Service is absent.
+      - name: Deploy API
+        uses: ./.github/actions/helm-release
+        with:
+          release: sg-bank-api
+          values: k8s/backend-values.yaml
+          namespace: ${{ env.NAMESPACE }}
+          version: ${{ env.VERSION }}
+
+      - name: Deploy web
+        uses: ./.github/actions/helm-release
+        with:
+          release: sg-bank-web
+          values: k8s/frontend-values.yaml
+          namespace: ${{ env.NAMESPACE }}
+          version: ${{ env.VERSION }}
+
+      # --wait already gated on readiness; this makes the running versions
+      # visible in the log and the summary rather than implied.
+      - name: Report what is running
+        run: |
+          set -euo pipefail
+          kubectl -n "$NAMESPACE" get deploy,pods -o wide
+          {
+            echo "### Deployed \`$VERSION\` to $CLUSTER_NAME/$NAMESPACE"
+            echo
+            echo '```'
+            kubectl -n "$NAMESPACE" get deploy -o custom-columns=NAME:.metadata.name,IMAGE:.spec.template.spec.containers[0].image,READY:.status.readyReplicas
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Surface why it failed
+        if: failure()
+        run: |
+          kubectl -n "$NAMESPACE" get pods -o wide || true
+          kubectl -n "$NAMESPACE" describe pods | tail -60 || true
+          kubectl -n "$NAMESPACE" logs -l app=sg-bank-api --tail=50 || true
+          kubectl -n "$NAMESPACE" get jobs || true

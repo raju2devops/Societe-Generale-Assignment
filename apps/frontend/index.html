@@ -1,0 +1,25 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="referrer" content="no-referrer" />
+    <!--
+      The authoritative Content-Security-Policy is served as a HEADER by
+      nginx (see apps/frontend/nginx.conf) - a meta tag cannot express
+      frame-ancestors and is trivially stripped. This is a development-time
+      backstop only.
+    -->
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; connect-src 'self'; object-src 'none'; base-uri 'none'; form-action 'self'"
+    />
+    <title>Societe Generale - Account Management</title>
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+  </head>
+  <body>
+    <div id="root"></div>
+    <noscript>This application requires JavaScript to be enabled.</noscript>
+    <script type="module" src="/src/main.jsx"></script>
+  </body>
+</html>

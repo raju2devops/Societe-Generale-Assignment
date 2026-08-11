@@ -1,0 +1,52 @@
+name: Helm release
+description: Install or upgrade one tier of the application and wait for it to become ready.
+
+# The two tiers differ only by release name and values file, so the upgrade
+# lives here rather than being written out twice in the deploy workflow.
+
+inputs:
+  release:
+    description: Helm release name. Also becomes the Service and Deployment name.
+    required: true
+  values:
+    description: Values file, relative to the repository root.
+    required: true
+  namespace:
+    description: Target namespace.
+    required: true
+  version:
+    description: Image tag to deploy. Applied as image.tag, overriding the tag pinned in the values file.
+    required: true
+  chart:
+    description: Path to the chart.
+    required: false
+    default: ./helm-chart
+  timeout:
+    description: How long to wait for the release to report ready.
+    required: false
+    default: 10m
+
+runs:
+  using: composite
+  steps:
+    # Inputs are passed through env rather than interpolated into the script
+    # body, so a value carrying shell metacharacters can never be parsed as
+    # code. Same pattern as the version resolver in release.yml.
+    - name: Deploy ${{ inputs.release }}
+      shell: bash
+      env:
+        RELEASE: ${{ inputs.release }}
+        CHART: ${{ inputs.chart }}
+        VALUES: ${{ inputs.values }}
+        NAMESPACE: ${{ inputs.namespace }}
+        VERSION: ${{ inputs.version }}
+        TIMEOUT: ${{ inputs.timeout }}
+      run: |
+        set -euo pipefail
+        echo "::group::helm upgrade --install $RELEASE ($VERSION)"
+        helm upgrade --install "$RELEASE" "$CHART" \
+          -f "$VALUES" \
+          -n "$NAMESPACE" \
+          --set image.tag="$VERSION" \
+          --wait --timeout "$TIMEOUT"
+        echo "::endgroup::"
