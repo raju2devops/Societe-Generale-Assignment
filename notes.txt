@@ -1,0 +1,55 @@
+Example:
+
+If there are 3 Pods with 80% CPU usage and the target is 50%,:
+
+desiredReplicas = ceil(3 × 80 / 50)
+
+                = ceil(4.8)
+
+                = 5 pods
+
+Here, ceil means “round up to the nearest whole number.”
+ 
+cat <<EOF | kubectl apply -f -
+
+apiVersion: autoscaling/v1
+
+kind: HorizontalPodAutoscaler
+
+metadata:
+
+  name: nginx-hpa
+
+spec:
+
+  scaleTargetRef:
+
+    apiVersion: apps/v1
+
+    kind: Deployment
+
+    name: nginx-deployment
+
+  minReplicas: 1
+
+  maxReplicas: 3
+
+  targetCPUUtilizationPercentage: 60
+
+EOF
+ 
+Step 4: Test Autoscaling
+Now, let’s generate load and see if the number of NGINX Pods increases.
+
+We will use the hey utility to continuously send HTTP requests to the NGINX service.
+
+Run the following command:
+
+kubectl run load-generator \
+
+  --image=techiescamp/hey:latest \
+
+  --restart=Never \
+
+  -- -c 100 -q 50 -z 60m http://nginx-service.default.svc.cluster.local
+ 
